@@ -1,0 +1,60 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use v5.10.0;
+use TOML qw(from_toml);
+use Heap;
+use File::HomeDir qw(my_home);
+use File::Spec::Functions qw(catfile);
+use File::Slurp qw(slurp);
+use LWP::UserAgent ();
+use JSON::MaybeXS qw(decode_json);
+use Spreadsheet::Read qw(cr2cell cell2cr);
+use Data::Dumper;
+
+sub read_conf {
+
+	my $conf_file = catfile( my_home , ".config" , "buyplan.conf" );
+	my $toml = slurp($conf_file);
+	my ($data, $error) = from_toml($toml);
+
+	unless($data) {
+		die "Error reading TOML conf file: $error"
+	}
+
+	return $data;
+
+}
+
+sub read_google_sheet {
+	my ($ua, $URL, $cell, $row, $col) = @_;
+
+	my ($beg_col, $beg_row) = cell2cr $cell;
+	my $offset_cell = cr2cell( $beg_col , $beg_row + 1 );
+	my $cell_end = cr2cell( $beg_col + $col , $beg_row + $row );
+
+	my $response = $ua->get("$URL&ranges=$offset_cell:$cell_end");
+
+	unless ($response->is_success) {
+		die $response->status_line;
+	}
+
+	my $json = decode_json $response->decoded_content;
+	return $json->{'valueRanges'}->[0]->{'values'};
+}
+
+my $data = read_conf;
+my $ua = LWP::UserAgent->new;
+my $complete_URL = $data->{'document'}->{'URL'} . '&key=' . $data->{'authentication'}->{'api-key'};
+my $user_recap_cell =  $data->{'document'}->{'user-table'};
+my $user_recap = read_google_sheet( $ua, $complete_URL, $user_recap_cell, 1 , 2 );
+my $nb_users = $user_recap->[0]->[0];
+my $users_info_cell = $user_recap->[0]->[1];
+my $users_info = read_google_sheet( $ua, $complete_URL, $users_info_cell, 1 + $nb_users, 3 );
+
+for my $user_info (@$users_info) {
+	my ($user_name , $nb_manga, $user_list_cell) = @$user_info;
+	print "$user_name:\n";
+	print Dumper read_google_sheet( $ua, $complete_URL, $user_list_cell, 1 + $nb_manga, 6 );
+}
